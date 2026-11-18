@@ -488,10 +488,14 @@ export async function setZOrder(slideNumber: number, shapeIds: string[], positio
 // AI-created content and importing slides
 // ---------------------------------------------------------------------------
 
-/** Deletes slides and/or shapes tagged as created by the add-in. Optionally limited to one slide. */
+/**
+ * Deletes slides and/or shapes tagged as created by the add-in. Optionally limited to one slide.
+ * With dryRun, only counts what would be deleted.
+ */
 export async function deleteAiContent(
   scope: "slides" | "shapes" | "all",
   onlySlide?: number,
+  dryRun = false,
 ): Promise<{ slides: number; shapes: number }> {
   requireApi("1.3", "Finding AI-created content");
   return PowerPoint.run(async (context) => {
@@ -518,14 +522,14 @@ export async function deleteAiContent(
         await context.sync();
         shapes.items.forEach((shape, i) => {
           if (!tags[i].isNullObject) {
-            shape.delete();
+            if (!dryRun) shape.delete();
             shapesDeleted++;
           }
         });
       }
     }
-    if (scope !== "shapes") aiSlides.forEach((s) => s.delete());
-    await context.sync();
+    if (scope !== "shapes" && !dryRun) aiSlides.forEach((s) => s.delete());
+    if (!dryRun) await context.sync();
     return { slides: scope === "shapes" ? 0 : aiSlides.length, shapes: shapesDeleted };
   });
 }

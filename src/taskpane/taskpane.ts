@@ -1,8 +1,8 @@
 import { addAttachment, clearAttachments, describeAttachment, isSupportedFile, type Attachment } from "../attachments";
 import { chat, chatStream, listModels, type ChatMessage, type ContentChunk } from "../mistral";
-import { getSelection, replaceSelection } from "../powerpoint";
 import { DEFAULT_SETTINGS, loadSettings, saveSettings, type Settings } from "../settings";
-import { SYSTEM_PROMPT, TOOLS, ToolRunner, describeToolCall } from "../tools";
+import { SYSTEM_PROMPT, TOOLS, ToolRunner, describeToolCall, removeAiContent } from "../tools";
+import { confirmDialog } from "./confirm";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -43,9 +43,31 @@ function setStatus(message: string, isError = false): void {
 // Chat log rendering
 // ---------------------------------------------------------------------------
 
-function scrollLog(): void {
+/** True while the user hasn't scrolled up; the log then follows new content. */
+let pinnedToBottom = true;
+
+function toBottom(): void {
   const log = $("chat-log");
   log.scrollTop = log.scrollHeight;
+  log.lastElementChild?.scrollIntoView({ block: "end" });
+}
+
+/** Keeps the newest entry in view, also after the layout settles (fonts, buttons appearing, resizes). */
+function scrollLog(): void {
+  pinnedToBottom = true;
+  toBottom();
+  requestAnimationFrame(toBottom);
+}
+
+function initAutoScroll(): void {
+  const log = $("chat-log");
+  log.addEventListener("scroll", () => {
+    pinnedToBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 24;
+  });
+  // The log's visible height changes when attachments, the Stop button or the pane size change.
+  new ResizeObserver(() => {
+    if (pinnedToBottom) toBottom();
+  }).observe(log);
 }
 
 function appendMessage(role: "user" | "assistant", text: string): HTMLDivElement {
@@ -58,6 +80,29 @@ function appendMessage(role: "user" | "assistant", text: string): HTMLDivElement
   return div;
 }
 
+/** Animated "…" shown in a reply bubble until the first streamed text replaces it. */
+function typingIndicator(): HTMLSpanElement {
+  const dots = document.createElement("span");
+  dots.className = "typing";
+  dots.setAttribute("role", "img");
+  dots.setAttribute("aria-label", "Mistral is thinking");
+  dots.append(...[0, 1, 2].map(() => document.createElement("span")));
+  return dots;
+}
+
+/** Activity line with a spinner while a tool runs; overwrite textContent to finish it. */
+function appendRunning(text: string): HTMLDivElement {
+  const div = document.createElement("div");
+  div.className = "activity running";
+  const spinner = document.createElement("span");
+  spinner.className = "spinner";
+  spinner.setAttribute("aria-hidden", "true");
+  div.append(spinner, document.createTextNode(text));
+  $("chat-log").append(div);
+  scrollLog();
+  return div;
+}
+
 function appendActivity(text: string): HTMLDivElement {
   const div = document.createElement("div");
   div.className = "activity";
@@ -65,24 +110,6 @@ function appendActivity(text: string): HTMLDivElement {
   $("chat-log").append(div);
   scrollLog();
   return div;
-}
-
-/** Lets the user drop a text answer (e.g. speaker notes) into the current slide selection. */
-function addInsertButton(div: HTMLDivElement, text: string): void {
-  const btn = document.createElement("button");
-  btn.className = "insert";
-  btn.textContent = "Insert at cursor";
-  btn.title = "Replace the current text selection on the slide with this answer";
-  btn.addEventListener("click", async () => {
-    try {
-      const sel = (await getSelection()) ?? { kind: "text" as const, text: "" };
-      await replaceSelection(sel, text);
-      btn.textContent = "Inserted ✓";
-    } catch (err) {
-      btn.textContent = `Click into a text box first (${errorMessage(err)})`;
-    }
-  });
-  div.append(document.createElement("br"), btn);
 }
 
 // ---------------------------------------------------------------------------
@@ -153,17 +180,82 @@ function withoutOldImages(messages: ChatMessage[], keepFrom: number): ChatMessag
 }
 
 // ---------------------------------------------------------------------------
+// Predefined actions menu
+// ---------------------------------------------------------------------------
+
+function closeActionsMenu(): void {
+  $("actions-menu").hidden = true;
+  $("actions-toggle").setAttribute("aria-expanded", "false");
+}
+
+function initActionsMenu(): void {
+  const toggle = $<HTMLButtonElement>("actions-toggle");
+  const menu = $("actions-menu");
+  const items = () => Array.from(menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
+
+  toggle.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const open = menu.hidden;
+    menu.hidden = !open;
+    toggle.setAttribute("aria-expanded", String(open));
+    if (open) items()[0]?.focus();
+  });
+  items().forEach((item) =>
+    item.addEventListener("click", () => {
+      closeActionsMenu();
+      if (item.dataset.local === "remove-ai-content") void removeAiContentLocally();
+      else void send(item.dataset.quick ?? "");
+    }),
+  );
+  menu.addEventListener("keydown", (e) => {
+    const list = items();
+    const i = list.indexOf(document.activeElement as HTMLButtonElement);
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const next = (i + (e.key === "ArrowDown" ? 1 : -1) + list.length) % list.length;
+      list[next].focus();
+    } else if (e.key === "Escape") {
+      closeActionsMenu();
+      toggle.focus();
+    }
+  });
+  document.addEventListener("click", (e) => {
+    if (!menu.hidden && !menu.contains(e.target as Node)) closeActionsMenu();
+  });
+}
+
+/** Runs "Remove AI content" in the add-in only: count, confirm, delete. No request goes to Mistral. */
+async function removeAiContentLocally(): Promise<void> {
+  if (abort) return;
+  $("chat-empty").hidden = true;
+  const line = appendRunning("Removing AI content…");
+  setBusy(true);
+  try {
+    const outcome = await removeAiContent(confirmDialog);
+    line.textContent = `${outcome.ok ? "✓" : "⚠"} ${outcome.summary}`;
+    line.classList.toggle("failed", !outcome.ok && outcome.summary !== "Removal cancelled");
+  } catch (err) {
+    line.textContent = `⚠ Could not remove AI content: ${errorMessage(err)}`;
+    line.classList.add("failed");
+  } finally {
+    line.classList.remove("running");
+    setBusy(false);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Agent loop
 // ---------------------------------------------------------------------------
 
 const history: ChatMessage[] = [];
-const tools = new ToolRunner();
+const tools = new ToolRunner(confirmDialog);
 let abort: AbortController | null = null;
 
 function setBusy(isBusy: boolean): void {
   $<HTMLButtonElement>("chat-send").disabled = isBusy;
   $("chat-stop").hidden = !isBusy;
-  document.querySelectorAll<HTMLButtonElement>("[data-quick]").forEach((b) => (b.disabled = isBusy));
+  $<HTMLButtonElement>("actions-toggle").disabled = isBusy;
+  if (isBusy) closeActionsMenu();
 }
 
 async function send(prompt: string): Promise<void> {
@@ -190,11 +282,14 @@ async function send(prompt: string): Promise<void> {
   let reply: HTMLDivElement | null = null;
   try {
     for (let step = 0; step < MAX_STEPS; step++) {
-      reply = appendMessage("assistant", "…");
+      reply = appendMessage("assistant", "");
+      reply.append(typingIndicator());
       const result = await chatStream(
         settings,
         [{ role: "system", content: SYSTEM_PROMPT }, ...withoutOldImages(history, turnStart)],
         (full) => {
+          // Leading whitespace-only deltas would otherwise replace the typing dots with an empty bubble.
+          if (!full.trim()) return;
           reply!.textContent = full;
           scrollLog();
         },
@@ -209,7 +304,6 @@ async function send(prompt: string): Promise<void> {
 
       if (!result.toolCalls.length) {
         reply.textContent = result.content;
-        if (result.content) addInsertButton(reply, result.content);
         return;
       }
 
@@ -220,9 +314,10 @@ async function send(prompt: string): Promise<void> {
 
       const images: ContentChunk[] = [];
       for (const call of result.toolCalls) {
-        const line = appendActivity(describeToolCall(call) + "…");
+        const line = appendRunning(describeToolCall(call) + "…");
         const outcome = await tools.run(call);
         line.textContent = `${outcome.ok ? "✓" : "⚠"} ${outcome.summary}`;
+        line.classList.remove("running");
         line.classList.toggle("failed", !outcome.ok);
         history.push({ role: "tool", tool_call_id: call.id, name: call.function.name, content: outcome.result });
         if (outcome.image) images.push({ type: "image_url", image_url: outcome.image });
@@ -246,6 +341,7 @@ async function send(prompt: string): Promise<void> {
 }
 
 function initChat(): void {
+  initAutoScroll();
   const input = $<HTMLTextAreaElement>("chat-input");
   $<HTMLFormElement>("chat-form").addEventListener("submit", (e) => {
     e.preventDefault();
@@ -258,9 +354,7 @@ function initChat(): void {
     }
   });
   $("chat-stop").addEventListener("click", () => abort?.abort());
-  document.querySelectorAll<HTMLButtonElement>("[data-quick]").forEach((b) =>
-    b.addEventListener("click", () => void send(b.dataset.quick ?? "")),
-  );
+  initActionsMenu();
 
   // Attachments: paperclip, paste and drag & drop.
   const fileInput = $<HTMLInputElement>("file-input");

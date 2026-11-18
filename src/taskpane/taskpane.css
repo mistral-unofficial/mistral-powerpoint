@@ -7,6 +7,7 @@
   --accent: #fa520f;
   --accent-fg: #ffffff;
   --error: #c42b1c;
+  --danger: #c42b1c;
   --radius: 6px;
   color-scheme: light dark;
 }
@@ -18,6 +19,7 @@
     --border: #3d3d3d;
     --surface: #2a2a2a;
     --error: #ff7b6b;
+    --danger: #d13438;
   }
 }
 
@@ -76,9 +78,6 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .msg { padding: 8px; border-radius: var(--radius); white-space: pre-wrap; word-break: break-word; }
 .msg.user { background: var(--surface); align-self: flex-end; max-width: 90%; }
 .msg.assistant { border: 1px solid var(--border); }
-.msg .insert { margin-top: 6px; font-size: 11px; padding: 2px 6px; }
-.quick { display: flex; flex-wrap: wrap; gap: 4px; }
-.quick button { font-size: 12px; padding: 3px 8px; }
 .chat-form { display: flex; flex-direction: column; gap: 6px; }
 
 .attachments { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -92,3 +91,59 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .chip button { border: 0; background: none; padding: 0 4px; line-height: 1; }
 .msg-attachment { font-size: 11px; color: var(--muted); margin-top: 4px; }
 .chat-form.dragging textarea { border-color: var(--accent); border-style: dashed; }
+
+/* Typing dots in a reply bubble while Mistral is thinking */
+.typing { display: inline-flex; gap: 4px; align-items: center; height: 1em; padding: 2px 0; }
+.typing span {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--muted);
+  animation: typing-blink 1.2s infinite ease-in-out;
+}
+.typing span:nth-child(2) { animation-delay: 0.2s; }
+.typing span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes typing-blink {
+  0%, 80%, 100% { opacity: 0.25; transform: translateY(0); }
+  40% { opacity: 1; transform: translateY(-2px); }
+}
+
+/* Spinner on tool activity lines while the tool runs */
+.activity.running { display: flex; align-items: center; gap: 6px; }
+.spinner {
+  width: 10px; height: 10px; flex: none; border-radius: 50%;
+  border: 2px solid var(--border); border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .typing span { animation: none; opacity: 0.6; }
+  .spinner { animation: none; border-top-color: var(--border); }
+}
+
+/* Predefined actions menu (opens upwards from the input row) */
+.menu-wrap { margin-left: auto; position: relative; }
+.menu {
+  position: absolute; right: 0; bottom: calc(100% + 4px); z-index: 10;
+  display: flex; flex-direction: column; min-width: 190px; padding: 4px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+}
+.menu[hidden] { display: none; }
+.menu button { border: 0; background: none; text-align: left; padding: 6px 8px; border-radius: 4px; }
+.menu button:hover, .menu button:focus-visible { background: var(--surface); outline: none; }
+
+/* Confirmation dialog */
+.modal {
+  position: fixed; inset: 0; z-index: 100;
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+  background: rgba(0, 0, 0, 0.35);
+}
+.modal[hidden] { display: none; }
+.modal-box {
+  width: 100%; max-width: 320px; padding: 16px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+}
+.modal-box h2 { margin: 0 0 8px; font-size: 15px; }
+.modal-box p { margin: 0 0 16px; }
+.modal-actions { justify-content: flex-end; }
+button.danger { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 600; }

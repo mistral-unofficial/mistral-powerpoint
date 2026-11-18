@@ -40,7 +40,7 @@ Every tool checks the PowerPoint version it needs and reports a clear error to M
 
 Not possible through Office.js (up to 1.10): charts, SmartArt, animations and speaker notes. Exporting the deck (1.10) is intentionally not exposed.
 
-So you can just type things like *"Create 5 slides about our Q3 results"*, *"Turn the bullets on slide 3 into three colored cards"*, *"Translate the selected text to German"*, *"Put the attached logo top right on every slide"* or *"What's missing from this deck?"*. Tool activity is shown inline in the chat (✓ Read 12 slides, ✓ Added 5 slides…). Quick-action buttons above the input send common requests; **Insert at cursor** under an answer puts it into the current slide selection. Settings (API key, model, temperature, base URL) are behind the ⚙ button; **＋** starts a new chat.
+So you can just type things like *"Create 5 slides about our Q3 results"*, *"Turn the bullets on slide 3 into three colored cards"*, *"Translate the selected text to German"*, *"Put the attached logo top right on every slide"* or *"What's missing from this deck?"*. Tool activity is shown inline in the chat (✓ Read 12 slides, ✓ Added 5 slides…). The **Actions** menu next to Send holds predefined requests (summarize, review, improve/shorten selection, speaker notes, fix layout, remove AI content). Settings (API key, model, temperature, base URL) are behind the ⚙ button; **＋** starts a new chat.
 
 The system prompt and tool definitions live in [`src/tools.ts`](src/tools.ts); Office.js helpers are in `src/powerpoint.ts`, `src/shapes.ts` and `src/design.ts`, attachments in `src/attachments.ts`. The selected model must support function calling (current Mistral Large/Medium/Small do).
 

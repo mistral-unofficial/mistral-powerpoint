@@ -64,7 +64,7 @@ Writing:
 - insert_slides_from_file: insert all slides of an attached .pptx file.
 - group_shapes / ungroup_shape / set_z_order: group shapes and change their stacking order.
 - delete_slides / move_slide: remove or reorder slides.
-- delete_ai_content: remove the slides and/or shapes you created earlier (they are tagged). Use it for "undo what you added" or "remove the AI stuff".
+- delete_ai_content: remove the slides and/or shapes you created earlier (they are tagged). Use it for "undo what you added" or "remove the AI stuff". The add-in asks the user to confirm in a dialog, so do not ask for confirmation in chat; if they cancel, accept it.
 - update_table: edit an existing table (cell text and colours, insert/delete rows and columns, merge cells, column widths, style, banding).
 - add_hyperlink: link a shape, or a word/phrase inside it, to a URL or mailto: address.
 - set_background: solid, gradient, pattern or picture background for some or all slides, or reset to the template.
@@ -465,8 +465,56 @@ export interface ToolOutcome {
 }
 
 /** Executes tool calls against PowerPoint. Remembers the last selection so replace_selection targets it. */
+export interface ConfirmRequest {
+  title: string;
+  message: string;
+  confirmLabel: string;
+}
+
+/** Asks the user to confirm a destructive action; resolves true to proceed. */
+export type Confirm = (request: ConfirmRequest) => Promise<boolean>;
+
+/**
+ * Counts the content the assistant created, asks the user to confirm, then deletes it.
+ * Used by the delete_ai_content tool and directly (without Mistral) by the Actions menu.
+ */
+export async function removeAiContent(
+  confirm: Confirm,
+  scope: "slides" | "shapes" | "all" = "all",
+  only?: number,
+): Promise<ToolOutcome> {
+  const found = await deleteAiContent(scope, only, true);
+  if (!found.slides && !found.shapes) {
+    return { result: "Nothing created by the assistant was found, so nothing was removed.", summary: "Nothing to remove", ok: true };
+  }
+  const parts = [found.slides ? plural(found.slides, "slide") : "", found.shapes ? plural(found.shapes, "item") : ""].filter(Boolean);
+  const ok = await confirm({
+    title: "Remove AI content?",
+    message:
+      `This removes all items and slides created by Mistral${only ? ` on slide ${only}` : ""}: ${parts.join(" and ")}. ` +
+      "Anything you added to those slides is removed with them. " +
+      "Changes Mistral made to your existing content (text, colours, layouts, backgrounds) are not undone.",
+    confirmLabel: "Remove",
+  });
+  if (!ok) {
+    return {
+      result: "The user cancelled the removal. Nothing was deleted. Do not try again unless the user asks.",
+      summary: "Removal cancelled",
+      ok: false,
+    };
+  }
+  const { slides, shapes } = await deleteAiContent(scope, only);
+  return {
+    result: `Deleted ${slides} slides and ${shapes} shapes created by the assistant.`,
+    summary: `Removed ${plural(slides, "slide")}, ${plural(shapes, "item")}`,
+    ok: true,
+  };
+}
+
 export class ToolRunner {
   private selection: Selection | null = null;
+
+  constructor(private readonly confirm: Confirm = async () => true) {}
 
   /** Runs a tool and returns the result for the model plus a short summary for the UI. Errors go back to the model. */
   async run(call: ToolCall): Promise<ToolOutcome> {
@@ -616,12 +664,7 @@ export class ToolRunner {
       case "delete_ai_content": {
         const scope = ["slides", "shapes", "all"].includes(args.scope) ? args.scope : "all";
         const only = args.slide != null ? slideArg(args) : undefined;
-        const { slides, shapes } = await deleteAiContent(scope, only);
-        return {
-          result: `Deleted ${slides} slides and ${shapes} shapes created by the assistant.`,
-          summary: `Removed ${plural(slides, "slide")}, ${plural(shapes, "shape")}`,
-          ok: true,
-        };
+        return removeAiContent(this.confirm, scope, only);
       }
       case "get_design": {
         const n = args.slide != null ? slideArg(args) : undefined;
