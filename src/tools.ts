@@ -10,42 +10,81 @@ import {
 import {
   addShapes,
   addTable,
+  applyLayout,
+  deleteAiContent,
   deleteShapes,
   deleteSlides,
   getSelectedSlidesAndShapes,
   getSlideDetails,
+  getSlideImage,
+  groupShapes,
+  insertImage,
+  insertSlidesFromFile,
+  listLayouts,
   moveSlide,
+  setZOrder,
+  ungroupShape,
   updateShapes,
   type NewShape,
   type ShapeUpdate,
+  type ZOrder,
 } from "./shapes";
+import { getAttachment } from "./attachments";
+import {
+  THEME_COLORS,
+  addHyperlink,
+  getDesign,
+  setBackground,
+  setThemeColors,
+  updateTable,
+  type BackgroundSpec,
+  type TableEdit,
+  type ThemeColorName,
+} from "./design";
 
 export const SYSTEM_PROMPT = `You are Mistral, an assistant built into Microsoft PowerPoint. You can read and change the user's presentation with tools.
 
 Reading:
 - get_presentation_text: text of all slides. Use for summaries, reviews, speaker notes, questions about content.
 - get_selection: selected text, plus the selected slide numbers and shape ids. Use when the user says "this", "this slide", "the selection", "the selected box", etc.
-- get_slide_details: every shape on one slide with id, type, position, size, text, fill color and table cells. ALWAYS call this before changing the layout of an existing slide.
+- get_slide_details: every shape on one slide with id, type, position, size, text, fill color, table cells and whether you created it. ALWAYS call this before changing the layout of an existing slide.
+- view_slide: a rendered picture of a slide. Use it to check how a slide actually looks.
+- list_layouts: the layout names available in the template.
+- get_design: the real slide size, the theme colours and a slide's background. Call it before designing or recolouring.
 
 Writing:
 - replace_selection: replace the selected text.
-- add_slides: append slides with title + bullets (uses the template layouts).
+- add_slides: append slides with title + bullets (uses the template layouts; each slide may name a layout from list_layouts).
+- apply_layout: switch an existing slide to another template layout (e.g. "Two Content", "Comparison", "Section Header").
 - add_shapes: add text boxes, lines and geometric shapes (Rectangle, RoundRectangle, Ellipse, Triangle, Diamond, Hexagon, Pentagon, Octagon, HomePlate, Chevron, RightArrow, LeftArrow, Donut, Teardrop, Plaque, ...), with fill/line colors and text formatting.
 - update_shapes: move, resize, recolor, restyle or change the text of existing shapes (by id).
 - delete_shapes: remove shapes (by id).
 - add_table: insert a table.
+- insert_image: place an image the user attached (ids like att_1) on a slide.
+- insert_slides_from_file: insert all slides of an attached .pptx file.
+- group_shapes / ungroup_shape / set_z_order: group shapes and change their stacking order.
 - delete_slides / move_slide: remove or reorder slides.
+- delete_ai_content: remove the slides and/or shapes you created earlier (they are tagged). Use it for "undo what you added" or "remove the AI stuff".
+- update_table: edit an existing table (cell text and colours, insert/delete rows and columns, merge cells, column widths, style, banding).
+- add_hyperlink: link a shape, or a word/phrase inside it, to a URL or mailto: address.
+- set_background: solid, gradient, pattern or picture background for some or all slides, or reset to the template.
+- set_theme_colors: change the deck's theme colours (e.g. brand colours). This affects the whole presentation — only do it when asked.
 
 Layout rules:
-- Coordinates are in points from the top-left corner. A standard 16:9 slide is 960 x 540 points (4:3 is 720 x 540); infer the size from existing shapes if unsure.
+- Coordinates are in points from the top-left corner. Get the real slide size from get_design or get_slide_details (slide_size); a standard 16:9 slide is 960 x 540.
 - Keep ~40pt margins, align elements to a common grid, leave room below the title (title area is usually the top ~110pt), and avoid overlapping shapes unless intentional.
 - For columns/cards: compute equal widths with consistent gaps (e.g. three columns: width = (880 - 2*20) / 3).
-- Use colors as "#RRGGBB". Prefer a restrained palette that fits the existing deck; ensure text contrasts with its fill.
+- Prefer template layouts (add_slides with layout, apply_layout) over drawing placeholder-like boxes yourself.
+- After creating or rearranging a slide's layout, call view_slide once to check it; fix overlaps, overflowing or clipped text and poor contrast, then stop (at most two correction rounds).
+- When placing images keep their aspect ratio (give width only, height is derived) unless asked otherwise.
+- Group shapes that belong together (e.g. a card's box + text) after creating them.
+- Use colors as "#RRGGBB". Take colours from the theme (get_design) so new elements match the deck; ensure text contrasts with its fill.
+- Give inserted images a short alt_text for accessibility. Use list_style "numbered" for steps/sequences.
 - Slide content: short titles (max ~8 words), 3-5 concise bullets (max ~15 words), no bullet characters or numbering in text.
 
 Behaviour:
 - Act directly instead of asking for confirmation, then briefly say what you did.
-- You cannot insert images, charts, SmartArt, animations or change themes/backgrounds; say so if asked and offer the closest alternative.
+- You can only insert images the user attached to the chat (paperclip or paste). You cannot create charts, SmartArt, animations or speaker notes; say so if asked and offer the closest alternative (e.g. a table or shapes instead of a chart).
 - When rewriting text, keep one line per paragraph and preserve the language unless asked to translate.
 - Answer in the user's language.`;
 
@@ -64,6 +103,10 @@ const styleProps = {
   align: { type: "string", enum: ["Left", "Center", "Right", "Justify"] },
   vertical_align: { type: "string", enum: ["Top", "Middle", "Bottom"] },
   bullets: { type: "boolean", description: "Show bullet points for the paragraphs." },
+  list_style: { type: "string", enum: ["bullets", "numbered", "none"], description: "Paragraph list style." },
+  indent_level: { type: "integer", description: "Paragraph indent level (0 = top level)." },
+  rotation: { type: "number", description: "Rotation in degrees, clockwise." },
+  alt_text: { type: "string", description: "Alternative text for screen readers." },
 };
 const boxProps = {
   left: { type: "number" },
@@ -105,7 +148,11 @@ export const TOOLS: ToolDefinition[] = [
         description: "Content slides in order.",
         items: {
           type: "object",
-          properties: { title: { type: "string" }, bullets: { type: "array", items: { type: "string" } } },
+          properties: {
+            title: { type: "string" },
+            bullets: { type: "array", items: { type: "string" } },
+            layout: { type: "string", description: 'Optional layout name from list_layouts. Default "Title and Content".' },
+          },
           required: ["title", "bullets"],
         },
       },
@@ -176,6 +223,162 @@ export const TOOLS: ToolDefinition[] = [
     },
     ["slide", "rows"],
   ),
+  tool("view_slide", "Returns a rendered picture of a slide so you can see its actual look.", { slide: slideNumber }, ["slide"]),
+  tool("list_layouts", "Lists the names of the slide layouts available in the presentation's template."),
+  tool(
+    "apply_layout",
+    "Changes an existing slide to another layout of the template. Existing content is moved into the new layout's placeholders.",
+    { slide: slideNumber, layout: { type: "string", description: "Exact layout name from list_layouts." } },
+    ["slide", "layout"],
+  ),
+  tool(
+    "insert_image",
+    "Places an attached image on a slide. If only width (or only height) is given the other is derived from the aspect ratio.",
+    {
+      slide: slideNumber,
+      attachment_id: { type: "string", description: 'Attachment id like "att_1".' },
+      ...boxProps,
+      name: { type: "string" },
+      alt_text: { type: "string", description: "Short description of the image for screen readers." },
+    },
+    ["slide", "attachment_id", "left", "top"],
+  ),
+  tool(
+    "insert_slides_from_file",
+    "Inserts all slides of an attached .pptx file into the presentation.",
+    {
+      attachment_id: { type: "string" },
+      after_slide: { type: "integer", description: "Insert after this slide number. Omit to append at the end." },
+      keep_source_formatting: {
+        type: "boolean",
+        description: "true keeps the file's own design; false (default) adopts this presentation's theme.",
+      },
+    },
+    ["attachment_id"],
+  ),
+  tool(
+    "group_shapes",
+    "Groups two or more shapes on a slide into one group. Returns the group's shape id.",
+    { slide: slideNumber, shape_ids: { type: "array", items: { type: "string" } }, name: { type: "string" } },
+    ["slide", "shape_ids"],
+  ),
+  tool("ungroup_shape", "Ungroups a group shape.", { slide: slideNumber, shape_id: { type: "string" } }, ["slide", "shape_id"]),
+  tool(
+    "set_z_order",
+    "Changes the stacking order of shapes.",
+    {
+      slide: slideNumber,
+      shape_ids: { type: "array", items: { type: "string" } },
+      position: { type: "string", enum: ["BringToFront", "BringForward", "SendToBack", "SendBackward"] },
+    },
+    ["slide", "shape_ids", "position"],
+  ),
+  tool(
+    "delete_ai_content",
+    "Deletes slides and/or shapes that were created by this assistant (they carry a tag).",
+    {
+      scope: { type: "string", enum: ["slides", "shapes", "all"], description: "What to remove." },
+      slide: { ...slideNumber, description: "Only look at this slide. Omit for the whole presentation." },
+    },
+    ["scope"],
+  ),
+  tool(
+    "get_design",
+    "Returns the slide size (points), the theme colours and optionally the background of one slide.",
+    { slide: { ...slideNumber, description: "Optional slide whose background to report." } },
+  ),
+  tool(
+    "set_theme_colors",
+    "Changes theme colours of the presentation. Everything that uses theme colours updates.",
+    {
+      colors: {
+        type: "object",
+        description: `Map of theme colour name to "#RRGGBB". Names: ${THEME_COLORS.join(", ")}.`,
+        properties: Object.fromEntries(THEME_COLORS.map((c) => [c, { type: "string" }])),
+      },
+    },
+    ["colors"],
+  ),
+  tool(
+    "set_background",
+    "Sets the background of slides.",
+    {
+      slides: { type: "array", items: { type: "integer" }, description: "1-based slide numbers. Omit for all slides." },
+      fill: { type: "string", enum: ["solid", "gradient", "pattern", "picture", "reset"], description: '"reset" restores the template background.' },
+      color: { ...color, description: 'Colour for "solid".' },
+      transparency: { type: "number", description: "0..1 for solid or picture." },
+      gradient_type: { type: "string", enum: ["Linear", "Radial", "Rectangular", "Path", "ShadeFromTitle"] },
+      pattern: { type: "string", description: 'Pattern name, e.g. "Percent20", "LightDownwardDiagonal", "SmallGrid", "DottedGrid".' },
+      pattern_foreground: color,
+      pattern_background: color,
+      attachment_id: { type: "string", description: 'Attached image for "picture".' },
+      hide_background_graphics: { type: "boolean", description: "Hide the template's background graphics on these slides." },
+    },
+    ["fill"],
+  ),
+  tool(
+    "add_hyperlink",
+    "Adds a hyperlink to a shape, or to a phrase inside the shape's text.",
+    {
+      slide: slideNumber,
+      shape_id: { type: "string" },
+      address: { type: "string", description: "URL (https://...) or mailto: address." },
+      text: { type: "string", description: "Phrase in the shape's text to link. Omit to link the whole shape." },
+      screen_tip: { type: "string" },
+    },
+    ["slide", "shape_id", "address"],
+  ),
+  tool(
+    "update_table",
+    "Edits an existing table. Rows and columns are 1-based. Structural changes are applied before cell edits.",
+    {
+      slide: slideNumber,
+      shape_id: { type: "string", description: "The table's shape id." },
+      insert_rows: { type: "object", properties: { at: { type: "integer" }, count: { type: "integer" } }, required: ["at"] },
+      insert_columns: { type: "object", properties: { at: { type: "integer" }, count: { type: "integer" } }, required: ["at"] },
+      delete_rows: { type: "array", items: { type: "integer" } },
+      delete_columns: { type: "array", items: { type: "integer" } },
+      merge: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            row: { type: "integer" },
+            column: { type: "integer" },
+            row_count: { type: "integer" },
+            column_count: { type: "integer" },
+          },
+          required: ["row", "column", "row_count", "column_count"],
+        },
+      },
+      cells: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            row: { type: "integer" },
+            column: { type: "integer" },
+            text: { type: "string" },
+            fill_color: color,
+            font_color: color,
+            font_size: { type: "number" },
+            bold: { type: "boolean" },
+            align: { type: "string", enum: ["Left", "Center", "Right", "Justify"] },
+          },
+          required: ["row", "column"],
+        },
+      },
+      column_widths: {
+        type: "array",
+        items: { type: "object", properties: { column: { type: "integer" }, width: { type: "number" } }, required: ["column", "width"] },
+      },
+      style: { type: "string", description: 'Built-in table style, e.g. "MediumStyle2Accent1".' },
+      header_row: { type: "boolean" },
+      banded_rows: { type: "boolean" },
+      first_column: { type: "boolean" },
+    },
+    ["slide", "shape_id"],
+  ),
   tool(
     "delete_slides",
     "Deletes slides by number.",
@@ -202,6 +405,20 @@ const LABELS: Record<string, string> = {
   add_table: "Adding table",
   delete_slides: "Deleting slides",
   move_slide: "Moving slide",
+  view_slide: "Looking at slide",
+  list_layouts: "Reading layouts",
+  apply_layout: "Changing layout",
+  insert_image: "Inserting image",
+  insert_slides_from_file: "Importing slides",
+  group_shapes: "Grouping shapes",
+  ungroup_shape: "Ungrouping",
+  set_z_order: "Reordering layers",
+  delete_ai_content: "Removing AI content",
+  get_design: "Reading design",
+  set_theme_colors: "Changing theme colours",
+  set_background: "Changing background",
+  add_hyperlink: "Adding link",
+  update_table: "Editing table",
 };
 
 /** Human-readable label for the activity line shown in the chat. */
@@ -220,6 +437,7 @@ function toDeck(args: Record<string, any>): DeckSpec {
     slides: slides.map((s: any) => ({
       title: clean(s?.title),
       bullets: Array.isArray(s?.bullets) ? s.bullets.map(clean).filter(Boolean) : [],
+      layout: s?.layout ? String(s.layout) : undefined,
     })),
   };
 }
@@ -230,10 +448,12 @@ function slideArg(args: Record<string, any>, key = "slide"): number {
   return n;
 }
 
-interface ToolOutcome {
+export interface ToolOutcome {
   result: string;
   summary: string;
   ok: boolean;
+  /** Image (data URL) to show the model after the tool results, e.g. a slide screenshot. */
+  image?: string;
 }
 
 /** Executes tool calls against PowerPoint. Remembers the last selection so replace_selection targets it. */
@@ -322,6 +542,117 @@ export class ToolRunner {
         const to = slideArg(args, "to");
         await moveSlide(from, to);
         return { result: `Moved slide ${from} to position ${to}.`, summary: `Moved slide ${from} → ${to}`, ok: true };
+      }
+      case "view_slide": {
+        const n = slideArg(args);
+        const image = await getSlideImage(n);
+        return { result: `The picture of slide ${n} follows in the next message.`, summary: `Looked at slide ${n}`, ok: true, image };
+      }
+      case "list_layouts": {
+        const names = await listLayouts();
+        return { result: JSON.stringify(names), summary: `Found ${plural(names.length, "layout")}`, ok: true };
+      }
+      case "apply_layout": {
+        const n = slideArg(args);
+        await applyLayout(n, String(args.layout ?? ""));
+        return { result: `Slide ${n} now uses the "${args.layout}" layout.`, summary: `Slide ${n} → ${args.layout}`, ok: true };
+      }
+      case "insert_image": {
+        const n = slideArg(args);
+        const att = getAttachment(String(args.attachment_id));
+        if (att.kind !== "image") throw new Error(`${att.id} is not an image.`);
+        const ratio = (att.height ?? 1) / (att.width ?? 1);
+        let width = Number(args.width) || 0;
+        let height = Number(args.height) || 0;
+        if (!width && !height) width = Math.min(400, att.width ?? 400);
+        if (!height) height = width * ratio;
+        if (!width) width = height / ratio;
+        const id = await insertImage(n, {
+          base64: att.base64,
+          mime: att.mime,
+          left: Number(args.left) || 0,
+          top: Number(args.top) || 0,
+          width,
+          height,
+          name: args.name ? String(args.name) : att.name,
+          altText: args.alt_text ? String(args.alt_text) : undefined,
+        });
+        return {
+          result: JSON.stringify({ shape_id: id, width: Math.round(width), height: Math.round(height) }),
+          summary: `Inserted ${att.name} on slide ${n}`,
+          ok: true,
+        };
+      }
+      case "insert_slides_from_file": {
+        const att = getAttachment(String(args.attachment_id));
+        if (att.kind !== "pptx") throw new Error(`${att.id} is not a PowerPoint file.`);
+        const after = args.after_slide != null ? slideArg(args, "after_slide") : undefined;
+        const count = await insertSlidesFromFile(att.base64, after, Boolean(args.keep_source_formatting));
+        return { result: `Inserted ${count} slides from ${att.name}.`, summary: `Imported ${plural(count, "slide")} from ${att.name}`, ok: true };
+      }
+      case "group_shapes": {
+        const n = slideArg(args);
+        const id = await groupShapes(n, (args.shape_ids ?? []).map(String), args.name ? String(args.name) : undefined);
+        return { result: JSON.stringify({ group_shape_id: id }), summary: `Grouped shapes on slide ${n}`, ok: true };
+      }
+      case "ungroup_shape": {
+        const n = slideArg(args);
+        await ungroupShape(n, String(args.shape_id));
+        return { result: "Ungrouped. Call get_slide_details for the new shape ids.", summary: `Ungrouped on slide ${n}`, ok: true };
+      }
+      case "set_z_order": {
+        const n = slideArg(args);
+        await setZOrder(n, (args.shape_ids ?? []).map(String), args.position as ZOrder);
+        return { result: "Layer order changed.", summary: `Reordered layers on slide ${n}`, ok: true };
+      }
+      case "delete_ai_content": {
+        const scope = ["slides", "shapes", "all"].includes(args.scope) ? args.scope : "all";
+        const only = args.slide != null ? slideArg(args) : undefined;
+        const { slides, shapes } = await deleteAiContent(scope, only);
+        return {
+          result: `Deleted ${slides} slides and ${shapes} shapes created by the assistant.`,
+          summary: `Removed ${plural(slides, "slide")}, ${plural(shapes, "shape")}`,
+          ok: true,
+        };
+      }
+      case "get_design": {
+        const n = args.slide != null ? slideArg(args) : undefined;
+        return { result: JSON.stringify(await getDesign(n)), summary: "Read design", ok: true };
+      }
+      case "set_theme_colors": {
+        const changed = await setThemeColors((args.colors ?? {}) as Partial<Record<ThemeColorName, string>>);
+        return { result: `Changed theme colours: ${changed.join(", ")}.`, summary: `Changed ${plural(changed.length, "theme colour")}`, ok: true };
+      }
+      case "set_background": {
+        const spec: BackgroundSpec = { ...(args as BackgroundSpec) };
+        if (spec.fill === "picture") {
+          const att = getAttachment(String(args.attachment_id));
+          if (att.kind !== "image") throw new Error(`${att.id} is not an image.`);
+          spec.image_base64 = att.base64;
+        }
+        const numbers = Array.isArray(args.slides) && args.slides.length ? args.slides.map(Number) : undefined;
+        const count = await setBackground(numbers, spec);
+        return { result: `Background set on ${count} slides.`, summary: `Background on ${plural(count, "slide")}`, ok: true };
+      }
+      case "add_hyperlink": {
+        const n = slideArg(args);
+        const target = await addHyperlink(
+          n,
+          String(args.shape_id),
+          String(args.address),
+          args.text ? String(args.text) : undefined,
+          args.screen_tip ? String(args.screen_tip) : undefined,
+        );
+        return { result: `Linked ${target} to ${args.address}.`, summary: `Linked ${target} on slide ${n}`, ok: true };
+      }
+      case "update_table": {
+        const n = slideArg(args);
+        const done = await updateTable(n, String(args.shape_id), args as TableEdit);
+        return {
+          result: done.length ? `Table updated: ${done.join(", ")}.` : "Nothing to change.",
+          summary: `Edited table on slide ${n}`,
+          ok: true,
+        };
       }
       default:
         throw new Error(`Unknown tool ${name}`);

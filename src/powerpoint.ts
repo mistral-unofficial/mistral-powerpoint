@@ -3,7 +3,12 @@
 export interface SlideSpec {
   title: string;
   bullets: string[];
+  /** Optional layout name, e.g. "Two Content". Defaults to "Title and Content". */
+  layout?: string;
 }
+
+/** Tag key put on every slide and shape the add-in creates, so AI content can be found and removed. */
+export const AI_TAG = "MISTRAL_AI";
 
 export interface DeckSpec {
   title?: string;
@@ -128,13 +133,14 @@ export async function getPresentationText(): Promise<string> {
 interface Layouts {
   title?: string;
   content?: string;
+  all: { id: string; name: string }[];
 }
 
 async function findLayouts(context: PowerPoint.RequestContext): Promise<Layouts> {
   const masters = context.presentation.slideMasters;
   masters.load("items/id");
   await context.sync();
-  if (!masters.items.length) return {};
+  if (!masters.items.length) return { all: [] };
   const layouts = masters.items[0].layouts;
   layouts.load("items/id,items/name");
   await context.sync();
@@ -144,6 +150,7 @@ async function findLayouts(context: PowerPoint.RequestContext): Promise<Layouts>
     // English and German default names, falling back to the standard Office ordering.
     title: byName(/^(title slide|titelfolie)$/i) ?? layouts.items[0]?.id,
     content: byName(/^(title and content|titel und inhalt)$/i) ?? layouts.items[1]?.id ?? layouts.items[0]?.id,
+    all: layouts.items.map((l) => ({ id: l.id, name: l.name })),
   };
 }
 
@@ -153,7 +160,9 @@ async function addSlide(context: PowerPoint.RequestContext, layoutId: string | u
   const slides = context.presentation.slides;
   slides.load("items/id");
   await context.sync();
-  return slides.items[slides.items.length - 1];
+  const slide = slides.items[slides.items.length - 1];
+  if (supports("1.3")) slide.tags.add(AI_TAG, "1");
+  return slide;
 }
 
 /** Fills the slide's title/body placeholders, adding text boxes when the layout lacks them. */
@@ -210,7 +219,10 @@ export async function insertDeck(deck: DeckSpec, withTitleSlide: boolean): Promi
       added++;
     }
     for (const spec of deck.slides) {
-      const slide = await addSlide(context, layouts.content);
+      const named = spec.layout
+        ? layouts.all.find((l) => l.name.toLowerCase() === spec.layout!.toLowerCase())?.id
+        : undefined;
+      const slide = await addSlide(context, named ?? layouts.content);
       await fillSlide(context, slide, spec.title, spec.bullets.join("\n"));
       added++;
     }

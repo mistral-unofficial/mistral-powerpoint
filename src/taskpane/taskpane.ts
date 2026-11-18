@@ -1,4 +1,5 @@
-import { chat, chatStream, listModels, type ChatMessage } from "../mistral";
+import { addAttachment, clearAttachments, describeAttachment, isSupportedFile, type Attachment } from "../attachments";
+import { chat, chatStream, listModels, type ChatMessage, type ContentChunk } from "../mistral";
 import { getSelection, replaceSelection } from "../powerpoint";
 import { DEFAULT_SETTINGS, loadSettings, saveSettings, type Settings } from "../settings";
 import { SYSTEM_PROMPT, TOOLS, ToolRunner, describeToolCall } from "../tools";
@@ -85,6 +86,73 @@ function addInsertButton(div: HTMLDivElement, text: string): void {
 }
 
 // ---------------------------------------------------------------------------
+// Attachments
+// ---------------------------------------------------------------------------
+
+let pending: Attachment[] = [];
+
+function renderPending(): void {
+  const box = $("attachments");
+  box.replaceChildren(
+    ...pending.map((a) => {
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      if (a.previewDataUrl) {
+        const img = document.createElement("img");
+        img.src = a.previewDataUrl;
+        img.alt = "";
+        chip.append(img);
+      }
+      chip.append(document.createTextNode(a.name));
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.textContent = "×";
+      remove.title = `Remove ${a.name}`;
+      remove.addEventListener("click", () => {
+        pending = pending.filter((p) => p !== a);
+        renderPending();
+      });
+      chip.append(remove);
+      return chip;
+    }),
+  );
+  box.hidden = pending.length === 0;
+}
+
+async function attachFiles(files: Iterable<File>): Promise<void> {
+  for (const file of files) {
+    try {
+      pending.push(await addAttachment(file));
+    } catch (err) {
+      appendActivity(`⚠ ${errorMessage(err)}`).classList.add("failed");
+    }
+  }
+  renderPending();
+}
+
+function userContent(prompt: string, attachments: Attachment[]): ChatMessage {
+  if (!attachments.length) return { role: "user", content: prompt };
+  const chunks: ContentChunk[] = [
+    { type: "text", text: `${prompt}\n\nAttached files:\n${attachments.map((a) => `- ${describeAttachment(a)}`).join("\n")}` },
+  ];
+  for (const a of attachments) {
+    if (a.previewDataUrl) chunks.push({ type: "image_url", image_url: a.previewDataUrl });
+  }
+  return { role: "user", content: chunks };
+}
+
+/** Images from earlier turns are replaced by a placeholder to keep requests small. */
+function withoutOldImages(messages: ChatMessage[], keepFrom: number): ChatMessage[] {
+  return messages.map((m, i) => {
+    if (i >= keepFrom || m.role !== "user" || typeof m.content === "string") return m;
+    return {
+      role: "user",
+      content: m.content.map((c) => (c.type === "image_url" ? { type: "text" as const, text: "[image omitted]" } : c)),
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Agent loop
 // ---------------------------------------------------------------------------
 
@@ -100,12 +168,22 @@ function setBusy(isBusy: boolean): void {
 
 async function send(prompt: string): Promise<void> {
   prompt = prompt.trim();
-  if (!prompt || abort) return;
+  if ((!prompt && !pending.length) || abort) return;
+  if (!prompt) prompt = "See the attached files.";
   $<HTMLTextAreaElement>("chat-input").value = "";
+  const attachments = pending;
+  pending = [];
+  renderPending();
 
-  appendMessage("user", prompt);
+  const bubble = appendMessage("user", prompt);
+  for (const a of attachments) {
+    const tag = document.createElement("div");
+    tag.className = "msg-attachment";
+    tag.textContent = `📎 ${a.name}`;
+    bubble.append(tag);
+  }
   const turnStart = history.length;
-  history.push({ role: "user", content: prompt });
+  history.push(userContent(prompt, attachments));
 
   abort = new AbortController();
   setBusy(true);
@@ -115,7 +193,7 @@ async function send(prompt: string): Promise<void> {
       reply = appendMessage("assistant", "…");
       const result = await chatStream(
         settings,
-        [{ role: "system", content: SYSTEM_PROMPT }, ...history],
+        [{ role: "system", content: SYSTEM_PROMPT }, ...withoutOldImages(history, turnStart)],
         (full) => {
           reply!.textContent = full;
           scrollLog();
@@ -140,12 +218,18 @@ async function send(prompt: string): Promise<void> {
       else reply.remove();
       reply = null;
 
+      const images: ContentChunk[] = [];
       for (const call of result.toolCalls) {
         const line = appendActivity(describeToolCall(call) + "…");
-        const { result: output, summary, ok } = await tools.run(call);
-        line.textContent = `${ok ? "✓" : "⚠"} ${summary}`;
-        line.classList.toggle("failed", !ok);
-        history.push({ role: "tool", tool_call_id: call.id, name: call.function.name, content: output });
+        const outcome = await tools.run(call);
+        line.textContent = `${outcome.ok ? "✓" : "⚠"} ${outcome.summary}`;
+        line.classList.toggle("failed", !outcome.ok);
+        history.push({ role: "tool", tool_call_id: call.id, name: call.function.name, content: outcome.result });
+        if (outcome.image) images.push({ type: "image_url", image_url: outcome.image });
+      }
+      // Tool results can only carry text, so screenshots are handed to the model as a follow-up message.
+      if (images.length) {
+        history.push({ role: "user", content: [{ type: "text", text: "Rendered slide image(s) from view_slide:" }, ...images] });
       }
     }
     appendActivity("Stopped after too many steps.");
@@ -177,9 +261,39 @@ function initChat(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-quick]").forEach((b) =>
     b.addEventListener("click", () => void send(b.dataset.quick ?? "")),
   );
+
+  // Attachments: paperclip, paste and drag & drop.
+  const fileInput = $<HTMLInputElement>("file-input");
+  $("attach").addEventListener("click", () => fileInput.click());
+  fileInput.addEventListener("change", () => {
+    void attachFiles(Array.from(fileInput.files ?? []));
+    fileInput.value = "";
+  });
+  input.addEventListener("paste", (e) => {
+    const files = Array.from(e.clipboardData?.files ?? []).filter(isSupportedFile);
+    if (files.length) {
+      e.preventDefault();
+      void attachFiles(files);
+    }
+  });
+  const form = $("chat-form");
+  form.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    form.classList.add("dragging");
+  });
+  form.addEventListener("dragleave", () => form.classList.remove("dragging"));
+  form.addEventListener("drop", (e) => {
+    e.preventDefault();
+    form.classList.remove("dragging");
+    void attachFiles(Array.from(e.dataTransfer?.files ?? []).filter(isSupportedFile));
+  });
+
   $("new-chat").addEventListener("click", () => {
     abort?.abort();
     history.length = 0;
+    pending = [];
+    clearAttachments();
+    renderPending();
     $("chat-log")
       .querySelectorAll(".msg, .activity")
       .forEach((el) => el.remove());

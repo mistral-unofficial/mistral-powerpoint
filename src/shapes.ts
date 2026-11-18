@@ -1,5 +1,7 @@
 /** Office.js helpers for inspecting and editing shapes, tables and slide order. Slide numbers are 1-based. */
 
+import { AI_TAG } from "./powerpoint";
+
 const supports = (version: string) => Office.context.requirements.isSetSupported("PowerPointApi", version);
 
 function requireApi(version: string, feature: string): void {
@@ -22,6 +24,11 @@ export interface ShapeStyle {
   align?: "Left" | "Center" | "Right" | "Justify";
   vertical_align?: "Top" | "Middle" | "Bottom";
   bullets?: boolean;
+  /** PowerPointApi 1.10 */
+  list_style?: "bullets" | "numbered" | "none";
+  indent_level?: number;
+  rotation?: number;
+  alt_text?: string;
 }
 
 export interface Box {
@@ -62,10 +69,19 @@ async function getSlide(context: PowerPoint.RequestContext, slideNumber: number)
   return slide;
 }
 
+function tagAi(target: PowerPoint.Shape | PowerPoint.Slide): void {
+  if (supports("1.3")) target.tags.add(AI_TAG, "1");
+}
+
 const round = (n: number) => Math.round(n * 10) / 10;
 const isNone = (v?: string) => v?.toLowerCase() === "none" || v?.toLowerCase() === "transparent";
 
 function applyStyle(shape: PowerPoint.Shape, style: ShapeStyle, isLine = false): void {
+  const needs110 = style.list_style || style.indent_level != null || style.rotation != null || style.alt_text != null;
+  if (needs110) requireApi("1.10", "Rotation, alt text and numbered lists");
+  if (style.rotation != null) shape.rotation = style.rotation;
+  if (style.alt_text != null) shape.altTextDescription = style.alt_text;
+
   if (!isLine) {
     if (style.fill_color) {
       if (isNone(style.fill_color)) shape.fill.clear();
@@ -92,6 +108,16 @@ function applyStyle(shape: PowerPoint.Shape, style: ShapeStyle, isLine = false):
   if (style.italic != null) range.font.italic = style.italic;
   if (style.align) range.paragraphFormat.horizontalAlignment = style.align;
   if (style.bullets != null) range.paragraphFormat.bulletFormat.visible = style.bullets;
+  if (style.list_style) {
+    const bullets = range.paragraphFormat.bulletFormat;
+    if (style.list_style === "none") bullets.visible = false;
+    else {
+      bullets.visible = true;
+      bullets.type = style.list_style === "numbered" ? "Numbered" : "Unnumbered";
+      if (style.list_style === "numbered") bullets.style = "ArabicNumeralPeriod";
+    }
+  }
+  if (style.indent_level != null) range.paragraphFormat.indentLevel = style.indent_level;
   if (style.vertical_align) shape.textFrame.verticalAlignment = style.vertical_align;
 }
 
@@ -122,6 +148,16 @@ export async function getSlideDetails(slideNumber: number): Promise<string> {
     shapes.load("items/id,items/name,items/type,items/left,items/top,items/width,items/height");
     await context.sync();
 
+    let rotations: number[] = [];
+    if (supports("1.10")) {
+      shapes.load("items/rotation");
+      try {
+        await context.sync();
+        rotations = shapes.items.map((s) => s.rotation);
+      } catch {
+        /* rotation not readable for some shape */
+      }
+    }
     const details = shapes.items.map((s) => ({
       id: s.id,
       name: s.name,
@@ -131,6 +167,22 @@ export async function getSlideDetails(slideNumber: number): Promise<string> {
       width: round(s.width),
       height: round(s.height),
     })) as Array<Record<string, unknown>>;
+    rotations.forEach((r, i) => {
+      if (r) details[i].rotation = r;
+    });
+
+    if (supports("1.3")) {
+      const tags = shapes.items.map((s) => s.tags.getItemOrNullObject(AI_TAG));
+      tags.forEach((t) => t.load("isNullObject"));
+      try {
+        await context.sync();
+        tags.forEach((t, i) => {
+          if (!t.isNullObject) details[i].created_by_ai = true;
+        });
+      } catch {
+        /* tags unavailable */
+      }
+    }
 
     // Text, fill and table contents are loaded per shape because not every shape type has them.
     for (const [i, s] of shapes.items.entries()) {
@@ -164,7 +216,14 @@ export async function getSlideDetails(slideNumber: number): Promise<string> {
         }
       }
     }
-    return JSON.stringify({ slide: slideNumber, shapes: details });
+    let size: { width: number; height: number } | undefined;
+    if (supports("1.10")) {
+      const setup = context.presentation.pageSetup;
+      setup.load("slideWidth,slideHeight");
+      await context.sync();
+      size = { width: setup.slideWidth, height: setup.slideHeight };
+    }
+    return JSON.stringify({ slide: slideNumber, ...(size ? { slide_size: size } : {}), shapes: details });
   });
 }
 
@@ -185,6 +244,7 @@ export async function addShapes(slideNumber: number, specs: NewShape[]): Promise
       }
       if (spec.name) shape.name = spec.name;
       applyStyle(shape, spec, kind === "line");
+      tagAi(shape);
       shape.load("id");
       created.push(shape);
     }
@@ -250,6 +310,7 @@ export async function addTable(slideNumber: number, spec: NewTable): Promise<str
       );
     }
     const shape = slide.shapes.addTable(values.length, columns, options);
+    tagAi(shape);
     shape.load("id");
     await context.sync();
     return shape.id;
@@ -278,5 +339,218 @@ export async function moveSlide(from: number, to: number): Promise<void> {
     const slide = await getSlide(context, from);
     slide.moveTo(to - 1);
     await context.sync();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Screenshots, layouts, images, grouping, layering
+// ---------------------------------------------------------------------------
+
+/** Renders a slide to a PNG data URL (PowerPointApi 1.8). */
+export async function getSlideImage(slideNumber: number, width = 1024): Promise<string> {
+  requireApi("1.8", "Viewing slides");
+  return PowerPoint.run(async (context) => {
+    const slide = await getSlide(context, slideNumber);
+    const image = slide.getImageAsBase64({ width });
+    await context.sync();
+    return `data:image/png;base64,${image.value}`;
+  });
+}
+
+async function firstMasterLayouts(context: PowerPoint.RequestContext): Promise<PowerPoint.SlideLayout[]> {
+  const masters = context.presentation.slideMasters;
+  masters.load("items/id");
+  await context.sync();
+  if (!masters.items.length) return [];
+  const layouts = masters.items[0].layouts;
+  layouts.load("items/id,items/name");
+  await context.sync();
+  return layouts.items;
+}
+
+export async function listLayouts(): Promise<string[]> {
+  return PowerPoint.run(async (context) => (await firstMasterLayouts(context)).map((l) => l.name));
+}
+
+export async function applyLayout(slideNumber: number, layoutName: string): Promise<void> {
+  requireApi("1.8", "Changing a slide's layout");
+  await PowerPoint.run(async (context) => {
+    const layouts = await firstMasterLayouts(context);
+    const layout = layouts.find((l) => l.name.toLowerCase() === layoutName.trim().toLowerCase());
+    if (!layout) {
+      throw new Error(`No layout named "${layoutName}". Available: ${layouts.map((l) => l.name).join(", ")}.`);
+    }
+    const slide = await getSlide(context, slideNumber);
+    slide.applyLayout(layout);
+    await context.sync();
+  });
+}
+
+export interface ImagePlacement {
+  base64: string;
+  mime: string;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  name?: string;
+  altText?: string;
+}
+
+/**
+ * Places an image on a slide. With PowerPointApi 1.8 it becomes a borderless rectangle filled with the picture
+ * (exact position on any slide); older versions fall back to inserting at the selected slide via the common API.
+ */
+export async function insertImage(slideNumber: number, img: ImagePlacement): Promise<string | null> {
+  if (supports("1.8")) {
+    return PowerPoint.run(async (context) => {
+      const slide = await getSlide(context, slideNumber);
+      const shape = slide.shapes.addGeometricShape(PowerPoint.GeometricShapeType.rectangle, {
+        left: img.left,
+        top: img.top,
+        width: img.width,
+        height: img.height,
+      });
+      shape.fill.setImage(img.base64);
+      shape.lineFormat.visible = false;
+      shape.name = img.name ?? "Picture";
+      if (img.altText && supports("1.10")) shape.altTextDescription = img.altText;
+      tagAi(shape);
+      shape.load("id");
+      await context.sync();
+      return shape.id;
+    });
+  }
+
+  // Fallback: select the target slide, then insert at the current view.
+  if (supports("1.5")) {
+    await PowerPoint.run(async (context) => {
+      const slide = await getSlide(context, slideNumber);
+      context.presentation.setSelectedSlides([slide.id]);
+      await context.sync();
+    });
+  }
+  await new Promise<void>((resolve, reject) => {
+    Office.context.document.setSelectedDataAsync(
+      img.base64,
+      {
+        coercionType: Office.CoercionType.Image,
+        imageLeft: img.left,
+        imageTop: img.top,
+        imageWidth: img.width,
+        imageHeight: img.height,
+      },
+      (result) => (result.status === Office.AsyncResultStatus.Succeeded ? resolve() : reject(new Error(result.error.message))),
+    );
+  });
+  return null;
+}
+
+export async function groupShapes(slideNumber: number, shapeIds: string[], name?: string): Promise<string> {
+  requireApi("1.8", "Grouping shapes");
+  if (shapeIds.length < 2) throw new Error("Grouping needs at least two shape ids.");
+  return PowerPoint.run(async (context) => {
+    const slide = await getSlide(context, slideNumber);
+    const group = slide.shapes.addGroup(shapeIds);
+    if (name) group.name = name;
+    tagAi(group);
+    group.load("id");
+    await context.sync();
+    return group.id;
+  });
+}
+
+export async function ungroupShape(slideNumber: number, groupId: string): Promise<void> {
+  requireApi("1.8", "Ungrouping shapes");
+  await PowerPoint.run(async (context) => {
+    const slide = await getSlide(context, slideNumber);
+    slide.shapes.getItem(groupId).group.ungroup();
+    await context.sync();
+  });
+}
+
+export type ZOrder = "BringToFront" | "BringForward" | "SendToBack" | "SendBackward";
+
+export async function setZOrder(slideNumber: number, shapeIds: string[], position: ZOrder): Promise<void> {
+  requireApi("1.8", "Changing the layer order");
+  await PowerPoint.run(async (context) => {
+    const slide = await getSlide(context, slideNumber);
+    shapeIds.forEach((id) => slide.shapes.getItem(id).setZOrder(position));
+    await context.sync();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// AI-created content and importing slides
+// ---------------------------------------------------------------------------
+
+/** Deletes slides and/or shapes tagged as created by the add-in. Optionally limited to one slide. */
+export async function deleteAiContent(
+  scope: "slides" | "shapes" | "all",
+  onlySlide?: number,
+): Promise<{ slides: number; shapes: number }> {
+  requireApi("1.3", "Finding AI-created content");
+  return PowerPoint.run(async (context) => {
+    const slides = context.presentation.slides;
+    slides.load("items/id");
+    await context.sync();
+    const targets = onlySlide ? [slides.items[onlySlide - 1]].filter(Boolean) : slides.items;
+    if (onlySlide && !targets.length) throw new Error(`Slide ${onlySlide} doesn't exist.`);
+
+    const slideTags = targets.map((s) => s.tags.getItemOrNullObject(AI_TAG));
+    slideTags.forEach((t) => t.load("isNullObject"));
+    await context.sync();
+    const aiSlides = targets.filter((_, i) => !slideTags[i].isNullObject);
+
+    let shapesDeleted = 0;
+    if (scope !== "slides") {
+      for (const slide of targets) {
+        if (scope === "all" && aiSlides.includes(slide)) continue; // removed with the slide anyway
+        const shapes = slide.shapes;
+        shapes.load("items/id");
+        await context.sync();
+        const tags = shapes.items.map((s) => s.tags.getItemOrNullObject(AI_TAG));
+        tags.forEach((t) => t.load("isNullObject"));
+        await context.sync();
+        shapes.items.forEach((shape, i) => {
+          if (!tags[i].isNullObject) {
+            shape.delete();
+            shapesDeleted++;
+          }
+        });
+      }
+    }
+    if (scope !== "shapes") aiSlides.forEach((s) => s.delete());
+    await context.sync();
+    return { slides: scope === "shapes" ? 0 : aiSlides.length, shapes: shapesDeleted };
+  });
+}
+
+/** Inserts all slides of a .pptx file after the given slide (or at the end). */
+export async function insertSlidesFromFile(
+  base64: string,
+  afterSlide: number | undefined,
+  keepSourceFormatting: boolean,
+): Promise<number> {
+  return PowerPoint.run(async (context) => {
+    const slides = context.presentation.slides;
+    slides.load("items/id");
+    await context.sync();
+    const before = slides.items.length;
+    const options: PowerPoint.InsertSlideOptions = {
+      formatting: keepSourceFormatting ? "KeepSourceFormatting" : "UseDestinationTheme",
+    };
+    if (afterSlide) {
+      const target = slides.items[afterSlide - 1];
+      if (!target) throw new Error(`Slide ${afterSlide} doesn't exist.`);
+      options.targetSlideId = target.id;
+    } else if (before) {
+      options.targetSlideId = slides.items[before - 1].id;
+    }
+    context.presentation.insertSlidesFromBase64(base64, options);
+    await context.sync();
+    slides.load("items/id");
+    await context.sync();
+    return slides.items.length - before;
   });
 }
