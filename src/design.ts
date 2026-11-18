@@ -223,52 +223,116 @@ export interface TableEdit {
   first_column?: boolean;
 }
 
+const isNone = (v?: string) => /^(none|transparent|no ?fill)$/i.test(v?.trim() ?? "");
+
+/** Accepts "#RRGGBB"/"RRGGBB"; returns undefined for "none"; throws for anything else. */
+function hexColor(value: string | undefined, what: string): string | undefined {
+  if (value == null || value === "" || isNone(value)) return undefined;
+  const v = value.trim();
+  if (/^#?[0-9a-f]{6}$/i.test(v)) return v.startsWith("#") ? v : `#${v}`;
+  throw new Error(`${what}: "${value}" is not a colour. Use "#RRGGBB" or "none".`);
+}
+
 export async function updateTable(slideNumber: number, shapeId: string, edit: TableEdit): Promise<string[]> {
   requireApi("1.9", "Editing tables");
   return PowerPoint.run(async (context) => {
     const [slide] = await getSlides(context, [slideNumber]);
     const table = slide.shapes.getItem(shapeId).getTable();
+    table.load("rowCount,columnCount");
+    await context.sync();
     const done: string[] = [];
 
-    // Structural changes first, each synced so later indexes refer to the updated table.
-    if (edit.insert_rows) {
-      table.rows.add(edit.insert_rows.at - 1, edit.insert_rows.count ?? 1);
+    /** Syncs and labels Office's terse errors (e.g. "InvalidArgument") with the step that failed. */
+    const step = async (label: string) => {
+      try {
+        await context.sync();
+      } catch (err) {
+        throw new Error(`${label} failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      table.load("rowCount,columnCount");
       await context.sync();
-      done.push(`inserted ${edit.insert_rows.count ?? 1} row(s)`);
+    };
+    const checkRow = (r: number, label: string) => {
+      if (!Number.isInteger(r) || r < 1 || r > table.rowCount) {
+        throw new Error(`${label}: row ${r} is out of range (the table has ${table.rowCount} rows).`);
+      }
+    };
+    const checkColumn = (c: number, label: string) => {
+      if (!Number.isInteger(c) || c < 1 || c > table.columnCount) {
+        throw new Error(`${label}: column ${c} is out of range (the table has ${table.columnCount} columns).`);
+      }
+    };
+
+    // Structural changes first, each synced so later indexes refer to the updated table.
+    // An insert position past the end (e.g. rowCount + 1) appends.
+    if (edit.insert_rows) {
+      const count = edit.insert_rows.count ?? 1;
+      const at = edit.insert_rows.at;
+      if (at >= 1 && at <= table.rowCount) table.rows.add(at - 1, count);
+      else table.rows.add(undefined, count);
+      await step("Inserting rows");
+      done.push(`inserted ${count} row(s)`);
     }
     if (edit.insert_columns) {
-      table.columns.add(edit.insert_columns.at - 1, edit.insert_columns.count ?? 1);
-      await context.sync();
-      done.push(`inserted ${edit.insert_columns.count ?? 1} column(s)`);
+      const count = edit.insert_columns.count ?? 1;
+      const at = edit.insert_columns.at;
+      if (at >= 1 && at <= table.columnCount) table.columns.add(at - 1, count);
+      else table.columns.add(undefined, count);
+      await step("Inserting columns");
+      done.push(`inserted ${count} column(s)`);
     }
     if (edit.delete_rows?.length) {
+      edit.delete_rows.forEach((r) => checkRow(r, "Deleting rows"));
       table.rows.deleteRows(edit.delete_rows.map((r) => table.rows.getItemAt(r - 1)));
-      await context.sync();
+      await step("Deleting rows");
       done.push(`deleted ${edit.delete_rows.length} row(s)`);
     }
     if (edit.delete_columns?.length) {
+      edit.delete_columns.forEach((c) => checkColumn(c, "Deleting columns"));
       table.columns.deleteColumns(edit.delete_columns.map((c) => table.columns.getItemAt(c - 1)));
-      await context.sync();
+      await step("Deleting columns");
       done.push(`deleted ${edit.delete_columns.length} column(s)`);
     }
-    for (const m of edit.merge ?? []) {
-      table.mergeCells(m.row - 1, m.column - 1, m.row_count, m.column_count);
+    if (edit.merge?.length) {
+      for (const m of edit.merge) {
+        checkRow(m.row, "Merging");
+        checkColumn(m.column, "Merging");
+        table.mergeCells(m.row - 1, m.column - 1, m.row_count, m.column_count);
+      }
+      await step("Merging cells");
+      done.push(`merged ${edit.merge.length} area(s)`);
     }
-    if (edit.merge?.length) done.push(`merged ${edit.merge.length} area(s)`);
 
-    for (const c of edit.cells ?? []) {
-      const cell = table.getCellOrNullObject(c.row - 1, c.column - 1);
-      if (c.text != null) cell.text = c.text;
-      if (c.fill_color) cell.fill.setSolidColor(c.fill_color);
-      if (c.font_color) cell.font.color = c.font_color;
-      if (c.font_size) cell.font.size = c.font_size;
-      if (c.bold != null) cell.font.bold = c.bold;
-      if (c.align) cell.horizontalAlignment = c.align;
+    if (edit.cells?.length) {
+      for (const c of edit.cells) {
+        const where = `Cell (row ${c.row}, column ${c.column})`;
+        checkRow(c.row, where);
+        checkColumn(c.column, where);
+        const cell = table.getCellOrNullObject(c.row - 1, c.column - 1);
+        if (c.text != null) cell.text = c.text;
+        if (c.fill_color) {
+          const fill = hexColor(c.fill_color, `${where} fill_color`);
+          if (fill) cell.fill.setSolidColor(fill);
+          else cell.fill.clear();
+        }
+        const font = hexColor(c.font_color, `${where} font_color`);
+        if (font) cell.font.color = font;
+        if (c.font_size) cell.font.size = c.font_size;
+        if (c.bold != null) cell.font.bold = c.bold;
+        if (c.align) cell.horizontalAlignment = c.align;
+      }
+      await step("Updating cells");
+      done.push(`updated ${edit.cells.length} cell(s)`);
     }
-    if (edit.cells?.length) done.push(`updated ${edit.cells.length} cell(s)`);
 
-    for (const w of edit.column_widths ?? []) table.columns.getItemAt(w.column - 1).width = w.width;
-    if (edit.column_widths?.length) done.push("set column widths");
+    if (edit.column_widths?.length) {
+      for (const w of edit.column_widths) {
+        checkColumn(w.column, "Column width");
+        table.columns.getItemAt(w.column - 1).width = w.width;
+      }
+      await step("Setting column widths");
+      done.push("set column widths");
+    }
 
     const settings = table.styleSettings;
     if (edit.style) settings.style = edit.style as PowerPoint.TableStyle;
@@ -276,10 +340,10 @@ export async function updateTable(slideNumber: number, shapeId: string, edit: Ta
     if (edit.banded_rows != null) settings.areRowsBanded = edit.banded_rows;
     if (edit.first_column != null) settings.isFirstColumnHighlighted = edit.first_column;
     if (edit.style || edit.header_row != null || edit.banded_rows != null || edit.first_column != null) {
+      await step(edit.style ? `Applying style "${edit.style}"` : "Changing table style options");
       done.push("updated style");
     }
 
-    await context.sync();
     return done;
   });
 }

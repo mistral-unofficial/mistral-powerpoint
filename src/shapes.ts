@@ -101,7 +101,7 @@ function applyStyle(shape: PowerPoint.Shape, style: ShapeStyle, isLine = false):
 
   const range = shape.textFrame.textRange;
   if (style.text != null) range.text = style.text;
-  if (style.font_color) range.font.color = style.font_color;
+  if (style.font_color && !isNone(style.font_color)) range.font.color = style.font_color;
   if (style.font_size) range.font.size = style.font_size;
   if (style.font_name) range.font.name = style.font_name;
   if (style.bold != null) range.font.bold = style.bold;
@@ -299,6 +299,8 @@ export async function addTable(slideNumber: number, spec: NewTable): Promise<str
     if (spec.height != null) options.height = spec.height;
     if (spec.style) options.style = spec.style as PowerPoint.TableStyle;
     if (spec.font_size) options.uniformCellProperties = { font: { size: spec.font_size } };
+    if (isNone(spec.header_fill_color)) spec.header_fill_color = undefined;
+    if (isNone(spec.header_font_color)) spec.header_font_color = undefined;
     if (spec.header_fill_color || spec.header_font_color) {
       options.specificCellProperties = values.map((row, r) =>
         row.map(() =>

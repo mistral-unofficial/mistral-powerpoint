@@ -71,6 +71,7 @@ Writing:
 - set_theme_colors: change the deck's theme colours (e.g. brand colours). This affects the whole presentation — only do it when asked.
 
 Layout rules:
+- Slide numbers are always as shown in PowerPoint: 1 is the first slide (never 0).
 - Coordinates are in points from the top-left corner. Get the real slide size from get_design or get_slide_details (slide_size); a standard 16:9 slide is 960 x 540.
 - Keep ~40pt margins, align elements to a common grid, leave room below the title (title area is usually the top ~110pt), and avoid overlapping shapes unless intentional.
 - For columns/cards: compute equal widths with consistent gaps (e.g. three columns: width = (880 - 2*20) / 3).
@@ -114,7 +115,7 @@ const boxProps = {
   width: { type: "number" },
   height: { type: "number" },
 };
-const slideNumber = { type: "integer", description: "1-based slide number." };
+const slideNumber = { type: "integer", description: "Slide number as shown in PowerPoint: 1 = first slide (not 0-based)." };
 
 function tool(name: string, description: string, properties: Record<string, unknown> = {}, required: string[] = []): ToolDefinition {
   return { type: "function", function: { name, description, parameters: { type: "object", properties, required } } };
@@ -443,8 +444,15 @@ function toDeck(args: Record<string, any>): DeckSpec {
 }
 
 function slideArg(args: Record<string, any>, key = "slide"): number {
-  const n = Number(args[key]);
-  if (!Number.isInteger(n) || n < 1) throw new Error(`"${key}" must be a slide number starting at 1.`);
+  const raw = args[key];
+  const n = Number(raw);
+  if (raw == null || raw === "" || !Number.isInteger(n) || n < 1) {
+    const got = raw == null ? "nothing" : JSON.stringify(raw);
+    throw new Error(
+      `"${key}" must be a slide number as shown in PowerPoint (1 = first slide), but got ${got}.` +
+        (n === 0 ? " Slide numbers are not 0-based." : ""),
+    );
+  }
   return n;
 }
 
