@@ -148,9 +148,11 @@ export async function getSlideDetails(slideNumber: number): Promise<string> {
     shapes.load("items/id,items/name,items/type,items/left,items/top,items/width,items/height");
     await context.sync();
 
+    // Note: calling shapes.load() again would replace shapes.items with new proxies that lack the
+    // properties loaded above, so extra properties are loaded per shape instead.
     let rotations: number[] = [];
     if (supports("1.10")) {
-      shapes.load("items/rotation");
+      shapes.items.forEach((s) => s.load("rotation"));
       try {
         await context.sync();
         rotations = shapes.items.map((s) => s.rotation);

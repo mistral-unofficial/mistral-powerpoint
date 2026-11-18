@@ -5,13 +5,13 @@
            xmlns:ov="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
            xsi:type="TaskPaneApp">
   <Id>d784b7f1-ea3b-4fec-95ff-ac8f5577c94a</Id>
-  <Version>1.0.0.0</Version>
+  <Version>1.0.1.0</Version>
   <ProviderName>mistral-ppt</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="Mistral for PowerPoint"/>
   <Description DefaultValue="Generate slides, rewrite text and chat about your deck with Mistral AI."/>
-  <IconUrl DefaultValue="https://localhost:3000/icon-32.png"/>
-  <HighResolutionIconUrl DefaultValue="https://localhost:3000/icon-64.png"/>
+  <IconUrl DefaultValue="https://localhost:3000/icon-32.png?v=2"/>
+  <HighResolutionIconUrl DefaultValue="https://localhost:3000/icon-64.png?v=2"/>
   <SupportUrl DefaultValue="https://docs.mistral.ai"/>
   <AppDomains>
     <AppDomain>https://api.mistral.ai</AppDomain>
@@ -70,9 +70,9 @@
     </Hosts>
     <Resources>
       <bt:Images>
-        <bt:Image id="Icon.16" DefaultValue="https://localhost:3000/icon-16.png"/>
-        <bt:Image id="Icon.32" DefaultValue="https://localhost:3000/icon-32.png"/>
-        <bt:Image id="Icon.80" DefaultValue="https://localhost:3000/icon-80.png"/>
+        <bt:Image id="Icon.16" DefaultValue="https://localhost:3000/icon-16.png?v=2"/>
+        <bt:Image id="Icon.32" DefaultValue="https://localhost:3000/icon-32.png?v=2"/>
+        <bt:Image id="Icon.80" DefaultValue="https://localhost:3000/icon-80.png?v=2"/>
       </bt:Images>
       <bt:Urls>
         <bt:Url id="GetStarted.LearnMoreUrl" DefaultValue="https://docs.mistral.ai"/>
