@@ -445,6 +445,12 @@ function initSettings(): void {
   temp.value = String(settings.temperature);
   const showTemp = () => ($("set-temp-val").textContent = `(${Number(temp.value).toFixed(2)})`);
   temp.addEventListener("input", showTemp);
+  const infoToggle = $<HTMLButtonElement>("temp-info-toggle");
+  infoToggle.addEventListener("click", () => {
+    const info = $("temp-info");
+    info.hidden = !info.hidden;
+    infoToggle.setAttribute("aria-expanded", String(!info.hidden));
+  });
   showTemp();
   fillModelSelect(["mistral-large-latest", "mistral-medium-latest", "mistral-small-latest"]);
 
@@ -472,10 +478,13 @@ function initSettings(): void {
   test.addEventListener("click", () =>
     withButton(test, "Testing…", async () => {
       const candidate = readSettingsForm();
+      // Reasoning models spend tokens on hidden "thinking" first, so leave room for a visible reply.
       const reply = await chat(candidate, [{ role: "user", content: "Reply with the single word: OK" }], {
-        maxTokens: 5,
+        maxTokens: 200,
       });
-      setStatus(`Connected to ${candidate.model}: "${reply.content.trim()}"`);
+      const text = reply.content.trim();
+      // Any successful response proves key and model work; only quote the reply when there is one.
+      setStatus(`✓ Connected to ${candidate.model}${text ? ` — replied "${text.slice(0, 40)}"` : ""}.`);
     }),
   );
 }
