@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mistral for PowerPoint</title>
+    <link rel="icon" href="icon-32.png" />
+    <style>
+      :root { --bg: #ffffff; --fg: #1b1b29; --muted: #5c5c70; --border: #dcdce3; --surface: #f3f3f6; --accent: #ff510b; color-scheme: light dark; }
+      @media (prefers-color-scheme: dark) {
+        :root { --bg: #1b1b29; --fg: #f3f3f6; --muted: #a8a8b8; --border: #3a3a4c; --surface: #242432; }
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+      main { max-width: 720px; margin: 0 auto; padding: 48px 16px; }
+      header { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+      h1 { font-size: 28px; margin: 0; }
+      h2 { font-size: 18px; margin: 32px 0 8px; }
+      p, li { color: var(--fg); }
+      .lead { color: var(--muted); margin-top: 0; }
+      .button { display: inline-block; background: var(--accent); color: #fff; font-weight: 600; text-decoration: none; padding: 10px 16px; border-radius: 6px; }
+      code { background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; font-size: 14px; overflow-wrap: anywhere; }
+      ol { padding-left: 20px; }
+      a { color: var(--accent); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <img src="icon-64.png" alt="" width="40" height="40" />
+        <h1>Mistral for PowerPoint</h1>
+      </header>
+      <p class="lead">A PowerPoint add-in that lets Mistral read, write and design your slides.</p>
+      <p><a class="button" href="manifest.xml" download="mistral-powerpoint-manifest.xml">Download manifest</a></p>
+
+      <h2>Install for yourself</h2>
+      <ol>
+        <li><strong>PowerPoint on the web:</strong> Home → Add-ins → More add-ins → My add-ins → <em>Upload my add-in</em>, then choose the downloaded manifest.</li>
+        <li><strong>PowerPoint for Mac:</strong> copy the manifest into <code>~/Library/Containers/com.microsoft.Powerpoint/Data/Documents/wef/</code> (create the folder if needed) and restart PowerPoint. The add-in appears under Home → Add-ins → My Add-ins.</li>
+        <li><strong>PowerPoint for Windows:</strong> put the manifest in a shared network folder, add that folder under File → Options → Trust Center → Trusted Add-in Catalogs, restart PowerPoint and pick it under Add-ins → Shared Folder.</li>
+      </ol>
+
+      <h2>Install for your organisation</h2>
+      <p>A Microsoft 365 admin can upload the manifest under <strong>Admin center → Settings → Integrated apps → Upload custom apps</strong> and assign it to users or groups. It then appears for them automatically.</p>
+
+      <h2>First start</h2>
+      <p>Open <strong>Home → Mistral</strong>, click ⚙ and paste your own API key from <a href="https://console.mistral.ai">console.mistral.ai</a>. The key stays on your machine; requests go directly to the Mistral API.</p>
+
+      <p><a href="https://github.com/mistral-unofficial/mistral-powerpoint">Source code and test playbook on GitHub</a></p>
+    </main>
+  </body>
+</html>

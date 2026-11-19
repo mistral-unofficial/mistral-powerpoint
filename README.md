@@ -90,6 +90,7 @@ With `npm run dev` running, open a presentation in PowerPoint on the web → **H
 | `npm run build` | Production build into `dist/` |
 | `npm run typecheck` | TypeScript type-check |
 | `npm run validate` | Validate `manifest.xml` |
+| `npm run manifest:prod` / `npm run validate:prod` | Generate / validate `manifest.prod.xml` for the hosted add-in |
 | `npm start` / `npm run stop` | Sideload / unload in PowerPoint desktop |
 | `npm run icons` | Regenerate the icons in `assets/` from `app-icon@2.png` (macOS, uses `sips`) |
 
@@ -97,7 +98,10 @@ With `npm run dev` running, open a presentation in PowerPoint on the web → **H
 
 ```
 manifest.xml              Office add-in manifest (Home tab button → task pane)
-assets/                   Icons (served at the web root)
+manifest.prod.xml         Production manifest (GitHub Pages URLs, separate add-in ID)
+.github/workflows/        GitHub Pages deployment
+scripts/                  Production manifest generator
+assets/                   Icons and the install landing page (served at the site root)
 src/taskpane/             Task pane HTML, CSS, chat UI and agent loop
 src/mistral.ts            Mistral client: chat, SSE streaming with tool calls, model listing
 src/tools.ts              System prompt, tool definitions and tool execution
@@ -110,8 +114,21 @@ src/settings.ts           Settings persistence
 
 ## Deploying
 
-1. `npm run build` and host `dist/` on any HTTPS static host.
-2. Replace every `https://localhost:3000` in `manifest.xml` with your host URL.
-3. Distribute the manifest via the Microsoft 365 admin center (centralized deployment) or a SharePoint app catalog.
+The add-in is hosted on GitHub Pages: **<https://mistral-unofficial.github.io/mistral-powerpoint/>**
+
+- Every push to `main` runs [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml): typecheck, build, generate the production manifest, publish `dist/` to Pages.
+- The site root is a short install page with a **Download manifest** button (`manifest.xml` next to the add-in).
+- [`manifest.prod.xml`](manifest.prod.xml) is the same production manifest, checked in for admins. Regenerate it with `npm run manifest:prod` after changing `manifest.xml` (another host: `npm run manifest:prod -- https://your.host/path/`), and check it with `npm run validate:prod`.
+- The production manifest has its own add-in ID, so the hosted version and your local dev version (`manifest.xml`, localhost) can be installed side by side.
+- Code changes reach users the next time they open the pane. Manifest changes (icons, ribbon) need a higher `<Version>` and a redistribution of the manifest.
+
+### Distributing to colleagues
+
+| Option | How |
+| --- | --- |
+| **Microsoft 365 admin center** (recommended for teams) | Admin center → Settings → **Integrated apps** → **Upload custom apps** → upload `manifest.prod.xml` and assign users/groups. The button then appears for them automatically on Windows, Mac and web. |
+| **PowerPoint on the web** | Home → Add-ins → More add-ins → My add-ins → **Upload my add-in** → the downloaded manifest. |
+| **PowerPoint for Mac** | Copy the manifest into `~/Library/Containers/com.microsoft.Powerpoint/Data/Documents/wef/` and restart PowerPoint. |
+| **PowerPoint for Windows** | Put the manifest in a shared network folder, add it under File → Options → Trust Center → **Trusted Add-in Catalogs**, restart, then Add-ins → Shared Folder. |
 
 > **Note:** Because the key lives in the browser, every user brings their own Mistral key. For an organisation-wide key, put a small backend proxy in front of the API and point **API base URL** at it.

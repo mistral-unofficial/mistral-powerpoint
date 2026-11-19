@@ -9,6 +9,9 @@ const __dirname = fileURLToPath(new URL(".", import.meta.url));
 // trusts a localhost certificate (run `npm run certs` once).
 export default defineConfig(async ({ command, isPreview }) => ({
   root: "src",
+  // Relative URLs, so the same build works on https://localhost:3000/ and under a
+  // subpath such as https://mistral-unofficial.github.io/mistral-powerpoint/.
+  base: "./",
   publicDir: resolve(__dirname, "assets"),
   build: {
     outDir: resolve(__dirname, "dist"),

@@ -17,7 +17,9 @@
     "certs": "office-addin-dev-certs install",
     "start": "office-addin-debugging start manifest.xml",
     "stop": "office-addin-debugging stop manifest.xml",
-    "validate": "office-addin-manifest validate manifest.xml"
+    "validate": "office-addin-manifest validate manifest.xml",
+    "manifest:prod": "node scripts/make-prod-manifest.mjs",
+    "validate:prod": "office-addin-manifest validate manifest.prod.xml"
   },
   "devDependencies": {
     "@types/office-js": "^1.0.617",
