@@ -445,6 +445,14 @@ function initSettings(): void {
   temp.value = String(settings.temperature);
   const showTemp = () => ($("set-temp-val").textContent = `(${Number(temp.value).toFixed(2)})`);
   temp.addEventListener("input", showTemp);
+  // Open the Mistral console in the system browser; plain links can be swallowed by the add-in's web view.
+  const getKey = $<HTMLAnchorElement>("get-api-key");
+  getKey.addEventListener("click", (e) => {
+    if (Office.context?.ui?.openBrowserWindow) {
+      e.preventDefault();
+      Office.context.ui.openBrowserWindow(getKey.href);
+    }
+  });
   const infoToggle = $<HTMLButtonElement>("temp-info-toggle");
   infoToggle.addEventListener("click", () => {
     const info = $("temp-info");

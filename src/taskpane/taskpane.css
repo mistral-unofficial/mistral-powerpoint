@@ -163,3 +163,7 @@ button.info-toggle[aria-expanded="true"] { color: var(--accent-fg); background: 
 .info-box[hidden] { display: none; }
 .info-box p { margin: 0 0 4px; }
 .info-box ul { margin: 0; padding-left: 16px; }
+
+/* Link aligned to the right end of a label row */
+.label-link { margin-left: auto; color: var(--accent); font-size: 12px; font-weight: 600; text-decoration: none; }
+.label-link:hover, .label-link:focus-visible { text-decoration: underline; }

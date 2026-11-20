@@ -50,7 +50,7 @@ Calls go directly from the add-in to `https://api.mistral.ai/v1` (the API allows
 
 - Node.js 20+
 - PowerPoint (Microsoft 365 desktop on Windows/macOS, or PowerPoint on the web) with **PowerPointApi 1.4+**. Placeholder detection uses 1.8 when available; selection fallbacks use 1.5.
-- A Mistral API key from <https://console.mistral.ai>
+- A Mistral API key from <https://console.mistral.ai/api-keys>
 
 ## Getting started
 

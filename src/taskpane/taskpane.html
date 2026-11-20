@@ -53,7 +53,10 @@
 
       <!-- Settings -->
       <section id="settings-view" class="view" hidden>
-        <label for="set-key">Mistral API key</label>
+        <div class="label-row">
+          <label for="set-key">Mistral API key</label>
+          <a id="get-api-key" class="label-link" href="https://console.mistral.ai/api-keys" target="_blank" rel="noopener noreferrer">Get API key</a>
+        </div>
         <input id="set-key" type="password" autocomplete="off" placeholder="Paste your key from console.mistral.ai" />
         <p class="hint">Requests go directly from PowerPoint to api.mistral.ai.</p>
         <label for="set-model">Model</label>
